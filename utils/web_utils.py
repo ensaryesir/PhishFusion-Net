@@ -131,10 +131,23 @@ def visit_url(driver, orig_url):
 
 
 def driver_loader():
-
+    import platform
+    from webdriver_manager.chrome import ChromeDriverManager
+    
     options = initialize_chrome_settings()
-    service = ChromeService(executable_path="./chromedriver-linux64/chromedriver")
-    driver = webdriver.Chrome(service=service, options=options)
+    
+    try:
+        # Otomatik chromedriver yönetimi (webdriver-manager kullanarak)
+        service = ChromeService(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        print(f"Otomatik chromedriver yüklenemedi: {e}")
+        print("Manuel chromedriver kullanılıyor...")
+        # Windows için chromedriver.exe, Linux için chromedriver
+        chromedriver_name = "chromedriver.exe" if platform.system() == "Windows" else "chromedriver"
+        service = ChromeService(executable_path=f"./chromedriver-linux64/{chromedriver_name}")
+        driver = webdriver.Chrome(service=service, options=options)
+    
     driver.set_page_load_timeout(60)  # set timeout to avoid wasting time
     driver.set_script_timeout(60)  # set timeout to avoid wasting time
     helium.set_driver(driver)
