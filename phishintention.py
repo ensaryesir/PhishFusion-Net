@@ -10,6 +10,7 @@ from modules.awl_detector import pred_rcnn, vis, find_element_type
 from modules.logo_matching import check_domain_brand_inconsistency
 from modules.crp_classifier import credential_classifier_mixed, html_heuristic
 from modules.crp_locator import crp_locator
+from modules.url_analyzer import URLAnalyzer, quick_url_check
 from utils.web_utils import driver_loader
 from tqdm import tqdm
 import re
@@ -21,8 +22,14 @@ class PhishIntentionWrapper:
     _caller_prefix = "PhishIntentionWrapper"
     _DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    def __init__(self):
+    def __init__(self, enable_url_analysis=True):
+        self.enable_url_analysis = enable_url_analysis
         self._load_config()
+        
+        # Initialize URL analyzer if enabled
+        if self.enable_url_analysis:
+            self.url_analyzer = URLAnalyzer(timeout=5)
+            print("URL Analysis module enabled")
 
     def _load_config(self):
         self.AWL_MODEL, self.CRP_CLASSIFIER, self.CRP_LOCATOR_MODEL, self.SIAMESE_MODEL, self.OCR_MODEL, \
@@ -41,7 +48,28 @@ class PhishIntentionWrapper:
         logo_match_time = 0
         crp_class_time = 0
         crp_locator_time = 0
+        url_analysis_time = 0
+        url_risk_score = 0.0
+        url_features = {}
+        
         print("Entering PhishIntention")
+        
+        ####################### Step 0: URL Analysis (NEW) ##############################################
+        if self.enable_url_analysis:
+            print("Performing URL analysis...")
+            start_time = time.time()
+            try:
+                url_features = self.url_analyzer.analyze(url)
+                url_risk_score = url_features.get('risk_score', 0.0)
+                url_analysis_time = time.time() - start_time
+                print(f"URL Risk Score: {url_risk_score:.3f} ({url_features.get('risk_level', 'unknown')})")
+                
+                # Early warning for high-risk URLs
+                if url_risk_score >= 0.7:
+                    print("⚠ WARNING: URL analysis indicates HIGH RISK!")
+            except Exception as e:
+                print(f"URL analysis error: {e}")
+                url_analysis_time = time.time() - start_time
 
         while True:
 
@@ -59,15 +87,15 @@ class PhishIntentionWrapper:
             if pred_boxes is None or len(pred_boxes) == 0:
                 print('No element is detected, reporte as benign')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time), \
-                            pred_boxes, pred_classes
+                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                            pred_boxes, pred_classes, url_risk_score, url_features
 
             logo_pred_boxes, _ = find_element_type(pred_boxes, pred_classes, bbox_type='logo')
             if logo_pred_boxes is None or len(logo_pred_boxes) == 0:
                 print('No logo is detected, reporte as benign')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time), \
-                            pred_boxes, pred_classes
+                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                            pred_boxes, pred_classes, url_risk_score, url_features
 
             print('Entering siamese')
 
@@ -87,8 +115,8 @@ class PhishIntentionWrapper:
             if pred_target is None:
                 print('Did not match to any brand, report as benign')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time), \
-                            pred_boxes, pred_classes
+                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                            pred_boxes, pred_classes, url_risk_score, url_features
 
             ######################## Step3: CRP classifier (if a target is reported) #################################
             print('A target is reported by siamese, enter CRP classifier')
@@ -128,8 +156,8 @@ class PhishIntentionWrapper:
                 if not successful:
                     print('Dynamic analysis cannot find any link redirected to a CRP page, report as benign')
                     return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time), \
-                            pred_boxes, pred_classes
+                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                            pred_boxes, pred_classes, url_risk_score, url_features
 
                 else:  # dynamic analysis successfully found a CRP
                     print('Dynamic analysis found a CRP, go back to layout detector')
@@ -146,10 +174,16 @@ class PhishIntentionWrapper:
             cv2.putText(plotvis, "Target: {} with confidence {:.4f}".format(pred_target, siamese_conf),
                         (int(matched_coord[0] + 20), int(matched_coord[1] + 20)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+            
+            # Add URL risk info to visualization
+            if self.enable_url_analysis and url_risk_score > 0:
+                cv2.putText(plotvis, "URL Risk: {:.2f}".format(url_risk_score),
+                            (int(matched_coord[0] + 20), int(matched_coord[1] + 50)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                    str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time), \
-                    pred_boxes, pred_classes
+                    str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                    pred_boxes, pred_classes, url_risk_score, url_features
 
 if __name__ == '__main__':
 
@@ -189,7 +223,7 @@ if __name__ == '__main__':
 
         phish_category, pred_target, matched_domain, \
                 plotvis, siamese_conf, runtime_breakdown, \
-                pred_boxes, pred_classes = phishintention_cls.test_orig_phishintention(url, screenshot_path)
+                pred_boxes, pred_classes, url_risk_score, url_features = phishintention_cls.test_orig_phishintention(url, screenshot_path)
 
         try:
             with open(result_txt, "a+", encoding='ISO-8859-1') as f:
@@ -199,6 +233,8 @@ if __name__ == '__main__':
                 f.write(str(pred_target) + "\t")  # write top1 prediction only
                 f.write(str(matched_domain) + "\t")
                 f.write(str(siamese_conf) + "\t")
+                f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
+                f.write(str(url_features.get('risk_level', 'unknown')) + "\t")  # NEW: Risk level
                 f.write(runtime_breakdown + "\n")
         except UnicodeError:
             with open(result_txt, "a+", encoding='utf-8') as f:
@@ -208,6 +244,8 @@ if __name__ == '__main__':
                 f.write(str(pred_target) + "\t")  # write top1 prediction only
                 f.write(str(matched_domain) + "\t")
                 f.write(str(siamese_conf) + "\t")
+                f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
+                f.write(str(url_features.get('risk_level', 'unknown')) + "\t")  # NEW: Risk level
                 f.write(runtime_breakdown + "\n")
 
         if phish_category:
