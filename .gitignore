@@ -5,3 +5,16 @@
 models/*
 *.DS_Store
 *.pyc
+
+# Large datasets - exclude from Git
+datasets/legitimacy_3049/
+datasets/phishing_1210/
+datasets/phishing_1220_new/
+datasets/legitimacy_3000/
+datasets/benign_1000/
+datasets/test_sites/
+
+# Result files - exclude from Git
+results*.txt
+*_results.txt
+test_results.txt
