@@ -15,7 +15,9 @@
   <a href="#-features">Features</a> •
   <a href="#-installation">Installation</a> •
   <a href="#-usage">Usage</a> •
-  <a href="#-configuration">Configuration</a>
+  <a href="#%EF%B8%8F-configuration">Configuration</a> •
+  <a href="#-performance">Performance</a> •
+  <a href="#%EF%B8%8F-troubleshooting">Troubleshooting</a>
 </p>
 
 <p align="center">
@@ -29,66 +31,26 @@
 
 ## 🎯 About
 
-**PhishFusion-Net** combines two powerful detection methods into one comprehensive phishing detection system:
+**PhishFusion-Net** is a multi-modal phishing detection system that combines URL analysis and visual recognition for improved accuracy.
 
-1. **URL Analysis** (Fast, Lightweight)
-   - 45+ features extracted from URL structure
-   - Lexical, domain, SSL, pattern, and redirect analysis
-   - Real-time risk scoring (0-1 scale)
-   - ~0.3-8 seconds per URL
+- **URL Analysis**: 45+ features, risk scoring (0-1), ~0.3-8s
+- **Visual Recognition**: Logo detection (277 brands), CRP classification, ~4-8s  
+- **Multi-Modal Fusion**: +15% accuracy, -50% false positives
 
-2. **Visual Recognition** (Deep, Accurate)
-   - Logo detection and brand matching (277 brands)
-   - Credential Request Page (CRP) classification
-   - Dynamic analysis with Selenium
-   - ~4-8 seconds per page
-
-3. **Multi-Modal Fusion** (Best of Both)
-   - Early filtering: Skip expensive visual analysis for obvious threats
-   - Confidence boosting: Higher certainty when both modalities agree
-   - Disambiguation: Resolve borderline cases
-   - **Result: +15% accuracy, -50% false positives**
-
-### Based on PhishIntention (USENIX Security 2022)
-
-This project extends [PhishIntention](https://github.com/lindsey98/PhishIntention) with URL-based detection capabilities for improved accuracy.
+Based on [PhishIntention](https://github.com/lindsey98/PhishIntention) (USENIX Security 2022) with enhanced URL-based detection.
 
 ---
 
 ## ✨ Features
 
-### URL Analysis Module (NEW)
+- **URL Analysis**: 45+ features (lexical, domain, SSL, patterns, redirects) with risk scoring
+- **Visual Detection**: Logo matching for 277 brands using Faster R-CNN and CRP classification
+- **Multi-Modal Fusion**: Early filtering, confidence boosting, and disambiguation strategies
 
-**45+ Features Extracted:**
-
-| Category | Features | Description |
-|----------|----------|-------------|
-| **Lexical** (15) | Length, entropy, character counts | URL structure analysis |
-| **Domain** (10) | TLD analysis, subdomains, IP detection | Domain reputation |
-| **SSL** (8) | Certificate validity, age, issuer | HTTPS security validation |
-| **Patterns** (12) | Homograph attacks, brand impersonation | Suspicious pattern detection |
-| **Redirects** (5) | Redirect chains, domain changes | Navigation analysis |
-
-**Risk Scoring:**
-- `0.0 - 0.5`: Low risk (safe)
-- `0.5 - 0.7`: Medium risk (suspicious)
-- `0.7 - 1.0`: High risk (likely phishing)
-
-### Visual Analysis (Original PhishIntention)
-
-- **Logo Detection**: 277 protected brands (Google, PayPal, Amazon, etc.)
-- **Layout Analysis**: Faster R-CNN for element detection
-- **CRP Classification**: Credential Request Page detection
-- **Dynamic Analysis**: Selenium-based navigation
-- **OCR Support**: Text-based logo matching
-
-### Multi-Modal Fusion
-
-**Three Fusion Strategies:**
-
-1. **Early Filtering**: URL risk ≥ 0.7 → Skip visual analysis
-2. **Confidence Boosting**: Both modalities agree → Higher confidence
-3. **Disambiguation**: Resolve borderline cases with URL features
+**Risk Levels:**
+- `0.0-0.5`: Low risk (safe)
+- `0.5-0.7`: Medium risk (suspicious)  
+- `0.7-1.0`: High risk (likely phishing)
 
 ---
 
@@ -114,13 +76,6 @@ Using **Pixi** (recommended):
 ```bash
 pixi install
 ```
-
-This will install all dependencies including:
-- PyTorch 2.9.0+cpu
-- Detectron2
-- Selenium
-- OpenCV
-- And more...
 
 ### Step 3: Download Model Files
 
@@ -154,30 +109,11 @@ For comprehensive testing, download datasets from [PhishIntention Experiment Str
 | **3310 Non-CRP Phishing** | 3.3K | Phishing sites without login forms | CRP locator testing |
 | **1003 Wild Benign Non-CRP** | 1K | Well-known brands main pages | Dynamic analysis testing |
 
-**Dataset Structure Required:**
-```
-site_folder/
-├── info.txt       # URL (required for PhishFusion)
-├── shot.png       # Screenshot (required)
-└── html.txt       # HTML source (optional)
-```
-
 **Recommended:** Start with **3049 Legitimacy Dataset** (~11 hours, optimal size)
-
-### Step 5: Verify Installation
-
-```bash
-pixi run python -c "import torch; import detectron2; print('Installation successful!')"
-```
-
----
 
 ## 💻 Usage
 
-```bash
-# Analyze websites with PhishFusion-Net
-pixi run python phishintention.py --folder datasets/test_sites --output_txt results.txt
-```
+For detailed usage commands and examples, see **[USAGE_GUIDE.md](USAGE_GUIDE.md)**
 
 ### Output Format
 
@@ -249,7 +185,7 @@ SIAMESE_MODEL:
 
 ---
 
-## ️ Troubleshooting
+## 🛠️ Troubleshooting
 
 **ModuleNotFoundError:**
 ```bash
@@ -265,7 +201,7 @@ Edit `configs/configs.yaml` and increase timeout to 10 seconds.
 pixi run pip install --upgrade webdriver-manager
 ```
 
-For detailed usage in Turkish, see [USAGE_GUIDE.md](USAGE_GUIDE.md)
+For usage examples, see [USAGE_GUIDE.md](USAGE_GUIDE.md)
 
 ---
 
