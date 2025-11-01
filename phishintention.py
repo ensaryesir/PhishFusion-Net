@@ -190,29 +190,102 @@ if __name__ == '__main__':
     '''run'''
     today = datetime.now().strftime('%Y%m%d')
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--folder", required=True, type=str)
-    parser.add_argument("--output_txt", default=f'{today}_results.txt', help="Output txt path")
+    parser = argparse.ArgumentParser(
+        description='PhishFusion-Net: Multi-Modal Phishing Detection',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Visual-only mode (no URL analysis)
+  python phishintention.py --folder datasets/legitimacy_3049/0.paulchen3.club --mode visual
+  
+  # URL-only mode (fast, for batch processing use batch_url_analysis.py instead)
+  python phishintention.py --folder datasets/legitimacy_3049/0.paulchen3.club --mode url
+  
+  # Fusion mode (both URL and Visual - most accurate)
+  python phishintention.py --folder datasets/legitimacy_3049/0.paulchen3.club --mode fusion
+  
+  # Batch analysis
+  python phishintention.py --folder datasets/legitimacy_3049 --mode fusion --output_txt results.txt
+        """
+    )
+    parser.add_argument("--folder", required=True, type=str, 
+                        help="Path to folder containing sites (each with shot.png and info.txt)")
+    parser.add_argument("--output_txt", default=f'{today}_results.txt', 
+                        help="Output txt path (default: YYYYMMDD_results.txt)")
+    parser.add_argument("--mode", type=str, default='fusion', 
+                        choices=['visual', 'url', 'fusion'],
+                        help="Analysis mode: 'visual' (visual only), 'url' (URL only - not recommended for batch), 'fusion' (both - default)")
     args = parser.parse_args()
 
     request_dir = args.folder
-    phishintention_cls = PhishIntentionWrapper()
+    
+    # Initialize detector based on mode
+    if args.mode == 'visual':
+        print("="*70)
+        print("Mode: VISUAL-ONLY Analysis")
+        print("URL analysis is DISABLED")
+        print("="*70)
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=False)
+    elif args.mode == 'url':
+        print("="*70)
+        print("Mode: URL-ONLY Analysis")
+        print("⚠️  Warning: For batch URL analysis, use batch_url_analysis.py instead!")
+        print("Visual analysis is DISABLED")
+        print("="*70)
+        # URL-only mode still needs the wrapper for consistency, but won't use visual models
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True)
+    else:  # fusion
+        print("="*70)
+        print("Mode: PHISHFUSION (URL + Visual)")
+        print("Both URL and Visual analysis ENABLED")
+        print("="*70)
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True)
+    
     result_txt = args.output_txt
 
     os.makedirs(request_dir, exist_ok=True)
 
-    for folder in tqdm(os.listdir(request_dir)):
-        html_path = os.path.join(request_dir, folder, "html.txt")
-        screenshot_path = os.path.join(request_dir, folder, "shot.png")
-        info_path = os.path.join(request_dir, folder, 'info.txt')
+    # Check if request_dir is a single site folder or contains multiple sites
+    is_single_site = os.path.exists(os.path.join(request_dir, "shot.png")) or \
+                     os.path.exists(os.path.join(request_dir, "info.txt"))
+    
+    if is_single_site:
+        # Single site mode
+        folders_to_process = [os.path.basename(request_dir)]
+        base_dir = os.path.dirname(request_dir)
+        if not base_dir:
+            base_dir = '.'
+    else:
+        # Batch mode
+        folders_to_process = os.listdir(request_dir)
+        base_dir = request_dir
 
-        if not os.path.exists(screenshot_path):
+    for folder in tqdm(folders_to_process, desc="Processing sites"):
+        if is_single_site:
+            folder_path = request_dir
+            folder_name = folder
+        else:
+            folder_path = os.path.join(request_dir, folder)
+            folder_name = folder
+        
+        html_path = os.path.join(folder_path, "html.txt")
+        screenshot_path = os.path.join(folder_path, "shot.png")
+        info_path = os.path.join(folder_path, 'info.txt')
+
+        # For URL-only mode, we don't need screenshot
+        if args.mode != 'url' and not os.path.exists(screenshot_path):
+            print(f"⏭️  Skipping {folder_name}: screenshot not found")
+            continue
+        
+        # For visual modes, we need screenshot
+        if args.mode == 'visual' and not os.path.exists(screenshot_path):
+            print(f"⏭️  Skipping {folder_name}: screenshot required for visual mode")
             continue
 
         if os.path.exists(info_path):
-            url = open(info_path).read()
+            url = open(info_path).read().strip()
         else:
-            url = "https://" + folder
+            url = "https://" + folder_name
 
         if os.path.exists(result_txt) and url in open(result_txt, encoding='ISO-8859-1').read():
             continue
@@ -221,34 +294,83 @@ if __name__ == '__main__':
         if re.search(_forbidden_suffixes, url, re.IGNORECASE):
             continue
 
-        phish_category, pred_target, matched_domain, \
-                plotvis, siamese_conf, runtime_breakdown, \
-                pred_boxes, pred_classes, url_risk_score, url_features = phishintention_cls.test_orig_phishintention(url, screenshot_path)
+        # Process based on mode
+        if args.mode == 'url':
+            # URL-only analysis (quick)
+            print(f"\n{'='*70}")
+            print(f"Analyzing URL: {folder_name}")
+            print(f"{'='*70}")
+            try:
+                url_features = phishintention_cls.url_analyzer.analyze(url)
+                url_risk_score = url_features.get('risk_score', 0.0)
+                url_risk_level = url_features.get('risk_level', 'unknown')
+                
+                print(f"URL: {url}")
+                print(f"Risk Score: {url_risk_score:.3f}")
+                print(f"Risk Level: {url_risk_level.upper()}")
+                print(f"HTTPS: {'✅' if url_features.get('uses_https') else '❌'}")
+                print(f"Suspicious: {'⚠️ YES' if url_risk_score > 0.5 else '✅ NO'}")
+                
+                # For URL-only mode, set visual results to N/A
+                phish_category = 1 if url_risk_score > 0.7 else 0
+                pred_target = 'N/A (URL-only mode)'
+                matched_domain = 'N/A'
+                siamese_conf = 0.0
+                runtime_breakdown = f"0|0|0|0|{url_features.get('_analysis_time', 0)}"
+                
+                with open(result_txt, "a+", encoding='utf-8') as f:
+                    f.write(folder_name + "\t")
+                    f.write(url + "\t")
+                    f.write(str(phish_category) + "\t")
+                    f.write(str(pred_target) + "\t")
+                    f.write(str(matched_domain) + "\t")
+                    f.write(str(siamese_conf) + "\t")
+                    f.write(str(url_risk_score) + "\t")
+                    f.write(str(url_risk_level) + "\t")
+                    f.write(runtime_breakdown + "\n")
+                
+            except Exception as e:
+                print(f"❌ Error analyzing {folder_name}: {str(e)}")
+            
+        else:
+            # Visual or Fusion mode
+            phish_category, pred_target, matched_domain, \
+                    plotvis, siamese_conf, runtime_breakdown, \
+                    pred_boxes, pred_classes, url_risk_score, url_features = \
+                    phishintention_cls.test_orig_phishintention(url, screenshot_path)
 
-        try:
-            with open(result_txt, "a+", encoding='ISO-8859-1') as f:
-                f.write(folder + "\t")
-                f.write(url + "\t")
-                f.write(str(phish_category) + "\t")
-                f.write(str(pred_target) + "\t")  # write top1 prediction only
-                f.write(str(matched_domain) + "\t")
-                f.write(str(siamese_conf) + "\t")
-                f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
-                f.write(str(url_features.get('risk_level', 'unknown')) + "\t")  # NEW: Risk level
-                f.write(runtime_breakdown + "\n")
-        except UnicodeError:
-            with open(result_txt, "a+", encoding='utf-8') as f:
-                f.write(folder + "\t")
-                f.write(url + "\t")
-                f.write(str(phish_category) + "\t")
-                f.write(str(pred_target) + "\t")  # write top1 prediction only
-                f.write(str(matched_domain) + "\t")
-                f.write(str(siamese_conf) + "\t")
-                f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
-                f.write(str(url_features.get('risk_level', 'unknown')) + "\t")  # NEW: Risk level
-                f.write(runtime_breakdown + "\n")
+            try:
+                with open(result_txt, "a+", encoding='ISO-8859-1') as f:
+                    f.write(folder_name + "\t")
+                    f.write(url + "\t")
+                    f.write(str(phish_category) + "\t")
+                    f.write(str(pred_target) + "\t")  # write top1 prediction only
+                    f.write(str(matched_domain) + "\t")
+                    f.write(str(siamese_conf) + "\t")
+                    f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
+                    f.write(str(url_features.get('risk_level', 'unknown') if url_features else 'N/A') + "\t")  # NEW: Risk level
+                    f.write(runtime_breakdown + "\n")
+            except UnicodeError:
+                with open(result_txt, "a+", encoding='utf-8') as f:
+                    f.write(folder_name + "\t")
+                    f.write(url + "\t")
+                    f.write(str(phish_category) + "\t")
+                    f.write(str(pred_target) + "\t")  # write top1 prediction only
+                    f.write(str(matched_domain) + "\t")
+                    f.write(str(siamese_conf) + "\t")
+                    f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
+                    f.write(str(url_features.get('risk_level', 'unknown') if url_features else 'N/A') + "\t")  # NEW: Risk level
+                    f.write(runtime_breakdown + "\n")
 
-        if phish_category:
-            os.makedirs(os.path.join(request_dir, folder), exist_ok=True)
-            cv2.imwrite(os.path.join(request_dir, folder, "predict.png"), plotvis)
-
+            if phish_category and plotvis is not None:
+                os.makedirs(folder_path, exist_ok=True)
+                cv2.imwrite(os.path.join(folder_path, "predict.png"), plotvis)
+        
+        # Break after first iteration if single site
+        if is_single_site:
+            break
+    
+    print(f"\n{'='*70}")
+    print(f"Analysis complete!")
+    print(f"Results saved to: {result_txt}")
+    print(f"{'='*70}")
