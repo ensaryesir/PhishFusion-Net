@@ -22,9 +22,13 @@ class PhishIntentionWrapper:
     _caller_prefix = "PhishIntentionWrapper"
     _DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    def __init__(self, enable_url_analysis=True):
+    def __init__(self, enable_url_analysis=True, enable_visual_analysis=True):
         self.enable_url_analysis = enable_url_analysis
-        self._load_config()
+        self.enable_visual_analysis = enable_visual_analysis
+        
+        # Only load visual models if visual analysis is enabled
+        if self.enable_visual_analysis:
+            self._load_config()
         
         # Initialize URL analyzer if enabled
         if self.enable_url_analysis:
@@ -51,12 +55,13 @@ class PhishIntentionWrapper:
         url_analysis_time = 0
         url_risk_score = 0.0
         url_features = {}
+        url_indicates_phishing = False
         
         print("Entering PhishIntention")
         
-        ####################### Step 0: URL Analysis (NEW) ##############################################
+        ####################### Step 0: URL Analysis (ALWAYS RUNS FIRST) ##############################################
         if self.enable_url_analysis:
-            print("Performing URL analysis...")
+            print("Step 0: Performing URL analysis...")
             start_time = time.time()
             try:
                 url_features = self.url_analyzer.analyze(url)
@@ -64,12 +69,27 @@ class PhishIntentionWrapper:
                 url_analysis_time = time.time() - start_time
                 print(f"URL Risk Score: {url_risk_score:.3f} ({url_features.get('risk_level', 'unknown')})")
                 
-                # Early warning for high-risk URLs
+                # Mark if URL indicates phishing, but continue with visual detection
                 if url_risk_score >= 0.7:
-                    print("⚠ WARNING: URL analysis indicates HIGH RISK!")
-            except Exception as e:
+                    url_indicates_phishing = True
+                    print("⚠️ WARNING: URL analysis indicates HIGH RISK!")
+                    print("➡️ Continuing with visual detection for comprehensive analysis...")
+                elif url_risk_score >= 0.5:
+                    print("⚠️ CAUTION: URL shows moderate risk")
+                    print("➡️ Continuing with visual detection...")
+                else:
+                    print("✅ URL appears safe")
+                    print("➡️ Continuing with visual detection for confirmation...")
+            except (ValueError, KeyError, TypeError) as e:
                 print(f"URL analysis error: {e}")
                 url_analysis_time = time.time() - start_time
+            except Exception as e:
+                print(f"Unexpected error in URL analysis: {e}")
+                url_analysis_time = time.time() - start_time
+        
+        print("\n" + "="*70)
+        print("Starting Visual Detection (Logo + CRP Analysis)...")
+        print("="*70)
 
         while True:
 
@@ -85,14 +105,28 @@ class PhishIntentionWrapper:
 
             # If no element is reported
             if pred_boxes is None or len(pred_boxes) == 0:
-                print('No element is detected, reporte as benign')
+                print('No element is detected')
+                # Decision fusion: URL + Visual
+                if url_indicates_phishing:
+                    print('⚠️ PHISHING detected by URL analysis (no visual elements found)')
+                    phish_category = 1
+                    pred_target = 'URL-based detection'
+                else:
+                    print('✅ Reported as benign (no visual elements + safe URL)')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
                             str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
                             pred_boxes, pred_classes, url_risk_score, url_features
 
             logo_pred_boxes, _ = find_element_type(pred_boxes, pred_classes, bbox_type='logo')
             if logo_pred_boxes is None or len(logo_pred_boxes) == 0:
-                print('No logo is detected, reporte as benign')
+                print('No logo is detected')
+                # Decision fusion: URL + Visual
+                if url_indicates_phishing:
+                    print('⚠️ PHISHING detected by URL analysis (no logo found)')
+                    phish_category = 1
+                    pred_target = 'URL-based detection'
+                else:
+                    print('✅ Reported as benign (no logo + safe URL)')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
                             str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
                             pred_boxes, pred_classes, url_risk_score, url_features
@@ -113,7 +147,14 @@ class PhishIntentionWrapper:
             logo_match_time += time.time() - start_time
 
             if pred_target is None:
-                print('Did not match to any brand, report as benign')
+                print('Did not match to any brand')
+                # Decision fusion: URL + Visual
+                if url_indicates_phishing:
+                    print('⚠️ PHISHING detected by URL analysis (no brand match in visual)')
+                    phish_category = 1
+                    pred_target = 'URL-based detection (suspicious URL patterns)'
+                else:
+                    print('✅ Reported as benign (no brand match + safe URL)')
                 return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
                             str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
                             pred_boxes, pred_classes, url_risk_score, url_features
@@ -123,7 +164,9 @@ class PhishIntentionWrapper:
             if waive_crp_classifier:  # only run dynamic analysis ONCE
                 break
 
-            html_path = screenshot_path.replace("shot.png", "html.txt")
+            # Get html.txt path from folder, not by string replacement
+            folder_path = os.path.dirname(screenshot_path)
+            html_path = os.path.join(folder_path, "html.txt")
             start_time = time.time()
             cre_pred = html_heuristic(html_path)
             if cre_pred == 1:  # if HTML heuristic report as nonCRP
@@ -148,16 +191,26 @@ class PhishIntentionWrapper:
                                                                              login_model=self.CRP_LOCATOR_MODEL,
                                                                              driver=driver)
                 crp_locator_time += process_time
-                driver.quit()
+                try:
+                    driver.quit()
+                except Exception as e:
+                    print(f"Warning: Failed to close driver: {e}")
 
                 waive_crp_classifier = True  # only run dynamic analysis ONCE
 
                 # If dynamic analysis did not reach a CRP
                 if not successful:
-                    print('Dynamic analysis cannot find any link redirected to a CRP page, report as benign')
-                    return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
-                            str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
-                            pred_boxes, pred_classes, url_risk_score, url_features
+                    print('Dynamic analysis cannot find any link redirected to a CRP page')
+                    # Decision fusion: URL + Visual
+                    if url_indicates_phishing and pred_target is not None:
+                        print('⚠️ PHISHING detected: High-risk URL + Brand detected (even without CRP)')
+                        phish_category = 1
+                        # Continue to add visualization
+                    else:
+                        print('✅ Reported as benign (no CRP found)')
+                        return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
+                                str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
+                                pred_boxes, pred_classes, url_risk_score, url_features
 
                 else:  # dynamic analysis successfully found a CRP
                     print('Dynamic analysis found a CRP, go back to layout detector')
@@ -168,18 +221,46 @@ class PhishIntentionWrapper:
 
         ######################## Step5: Return #################################
         if pred_target is not None:
-            print('Phishing is found!')
+            print('\n' + '='*70)
+            print('FINAL DECISION: Phishing Detection Results')
+            print('='*70)
             phish_category = 1
-            # Visualize, add annotations
-            cv2.putText(plotvis, "Target: {} with confidence {:.4f}".format(pred_target, siamese_conf),
-                        (int(matched_coord[0] + 20), int(matched_coord[1] + 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
             
-            # Add URL risk info to visualization
-            if self.enable_url_analysis and url_risk_score > 0:
-                cv2.putText(plotvis, "URL Risk: {:.2f}".format(url_risk_score),
-                            (int(matched_coord[0] + 20), int(matched_coord[1] + 50)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Enhanced decision with fusion confidence
+            conf_str = f"{siamese_conf:.4f}" if siamese_conf is not None else "N/A"
+            if url_indicates_phishing:
+                print(f'✓ Visual Detection: PHISHING (Brand: {pred_target}, Confidence: {conf_str})')
+                print(f'✓ URL Detection: HIGH RISK (Score: {url_risk_score:.3f})')
+                print('🎯 FUSION RESULT: HIGH CONFIDENCE PHISHING')
+                fusion_confidence = min((siamese_conf if siamese_conf is not None else 0.5) + (url_risk_score * 0.3), 1.0)
+            else:
+                print(f'✓ Visual Detection: PHISHING (Brand: {pred_target}, Confidence: {conf_str})')
+                print(f'✓ URL Detection: Low/Medium Risk (Score: {url_risk_score:.3f})')
+                print('⚠️ FUSION RESULT: PHISHING (Visual evidence strong)')
+                fusion_confidence = siamese_conf if siamese_conf is not None else 0.5
+            
+            # Visualize, add annotations (with null checks)
+            if plotvis is not None and matched_coord is not None:
+                cv2.putText(plotvis, "Target: {} (Conf: {:.4f})".format(pred_target, fusion_confidence),
+                            (int(matched_coord[0] + 20), int(matched_coord[1] + 20)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+                
+                # Add URL risk info to visualization
+                if self.enable_url_analysis and url_risk_score > 0:
+                    risk_color = (0, 0, 255) if url_risk_score >= 0.7 else (0, 165, 255) if url_risk_score >= 0.5 else (0, 255, 0)
+                    cv2.putText(plotvis, "URL Risk: {:.2f}".format(url_risk_score),
+                                (int(matched_coord[0] + 20), int(matched_coord[1] + 50)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, risk_color, 2)
+            
+            print('='*70)
+        elif url_indicates_phishing:
+            # URL detected phishing but visual didn't - rare case
+            print('\n' + '='*70)
+            print('⚠️ URL-ONLY PHISHING DETECTION')
+            print('='*70)
+            print('URL shows high-risk patterns but no visual phishing indicators found')
+            print('This could be a phishing attempt or false positive')
+            print('='*70)
 
         return phish_category, pred_target, matched_domain, plotvis, siamese_conf, \
                     str(awl_detect_time) + '|' + str(logo_match_time) + '|' + str(crp_class_time) + '|' + str(crp_locator_time) + '|' + str(url_analysis_time), \
@@ -225,25 +306,46 @@ Examples:
         print("Mode: VISUAL-ONLY Analysis")
         print("URL analysis is DISABLED")
         print("="*70)
-        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=False)
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=False, enable_visual_analysis=True)
     elif args.mode == 'url':
         print("="*70)
         print("Mode: URL-ONLY Analysis")
         print("⚠️  Warning: For batch URL analysis, use batch_url_analysis.py instead!")
-        print("Visual analysis is DISABLED")
+        print("Visual analysis is DISABLED (models not loaded)")
         print("="*70)
-        # URL-only mode still needs the wrapper for consistency, but won't use visual models
-        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True)
+        # URL-only mode - don't load visual models to save memory
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True, enable_visual_analysis=False)
     else:  # fusion
         print("="*70)
         print("Mode: PHISHFUSION (URL + Visual)")
         print("Both URL and Visual analysis ENABLED")
         print("="*70)
-        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True)
+        phishintention_cls = PhishIntentionWrapper(enable_url_analysis=True, enable_visual_analysis=True)
     
     result_txt = args.output_txt
 
     os.makedirs(request_dir, exist_ok=True)
+
+    # Load already processed URLs into a set for O(1) lookup (performance optimization)
+    processed_urls = set()
+    if os.path.exists(result_txt):
+        try:
+            with open(result_txt, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) > 1:
+                        processed_urls.add(parts[1])  # URL is second column
+        except UnicodeDecodeError:
+            # Fallback to ISO-8859-1 for legacy files
+            with open(result_txt, 'r', encoding='ISO-8859-1') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if len(parts) > 1:
+                        processed_urls.add(parts[1])
+        except Exception as e:
+            print(f"Warning: Could not load processed URLs: {e}")
+    
+    print(f"Loaded {len(processed_urls)} already processed URLs")
 
     # Check if request_dir is a single site folder or contains multiple sites
     is_single_site = os.path.exists(os.path.join(request_dir, "shot.png")) or \
@@ -260,7 +362,16 @@ Examples:
         folders_to_process = os.listdir(request_dir)
         base_dir = request_dir
 
-    for folder in tqdm(folders_to_process, desc="Processing sites"):
+    # Progress bar with better description
+    total_sites = len(folders_to_process)
+    skipped = 0
+    processed = 0
+    errors = 0
+    
+    site_word = "site" if total_sites == 1 else "sites"
+    pbar = tqdm(folders_to_process, desc=f"Processing {total_sites} {site_word}", unit="site")
+    
+    for folder in pbar:
         if is_single_site:
             folder_path = request_dir
             folder_name = folder
@@ -274,103 +385,112 @@ Examples:
 
         # For URL-only mode, we don't need screenshot
         if args.mode != 'url' and not os.path.exists(screenshot_path):
-            print(f"⏭️  Skipping {folder_name}: screenshot not found")
+            pbar.set_postfix_str(f"⏭️ Skip: no screenshot")
+            skipped += 1
             continue
         
         # For visual modes, we need screenshot
         if args.mode == 'visual' and not os.path.exists(screenshot_path):
-            print(f"⏭️  Skipping {folder_name}: screenshot required for visual mode")
+            pbar.set_postfix_str(f"⏭️ Skip: screenshot required")
+            skipped += 1
             continue
 
         if os.path.exists(info_path):
-            url = open(info_path).read().strip()
+            with open(info_path, 'r', encoding='utf-8') as f:
+                url = f.read().strip()
         else:
             url = "https://" + folder_name
 
-        if os.path.exists(result_txt) and url in open(result_txt, encoding='ISO-8859-1').read():
+        # Check if already processed - O(1) set lookup instead of O(n) file read
+        if url in processed_urls:
+            pbar.set_postfix_str(f"⏭️ Already processed")
+            skipped += 1
             continue
 
         _forbidden_suffixes = r"\.(mp3|wav|wma|ogg|mkv|zip|tar|xz|rar|z|deb|bin|iso|csv|tsv|dat|txt|css|log|sql|xml|sql|mdb|apk|bat|bin|exe|jar|wsf|fnt|fon|otf|ttf|ai|bmp|gif|ico|jp(e)?g|png|ps|psd|svg|tif|tiff|cer|rss|key|odp|pps|ppt|pptx|c|class|cpp|cs|h|java|sh|swift|vb|odf|xlr|xls|xlsx|bak|cab|cfg|cpl|cur|dll|dmp|drv|icns|ini|lnk|msi|sys|tmp|3g2|3gp|avi|flv|h264|m4v|mov|mp4|mp(e)?g|rm|swf|vob|wmv|doc(x)?|odt|rtf|tex|txt|wks|wps|wpd)$"
         if re.search(_forbidden_suffixes, url, re.IGNORECASE):
+            pbar.set_postfix_str(f"⏭️ Skip: forbidden file type")
+            skipped += 1
             continue
+        
+        # Update progress bar with current URL
+        url_display = url[:50] + "..." if len(url) > 50 else url
+        pbar.set_description(f"Processing: {url_display}")
 
-        # Process based on mode
-        if args.mode == 'url':
-            # URL-only analysis (quick)
-            print(f"\n{'='*70}")
-            print(f"Analyzing URL: {folder_name}")
-            print(f"{'='*70}")
-            try:
+        # Process based on mode - unified approach
+        try:
+            if args.mode == 'url':
+                # URL-only mode: Use a lightweight wrapper method
+                pbar.set_postfix_str("🔍 Analyzing URL...")
+                
+                start_time = time.time()
                 url_features = phishintention_cls.url_analyzer.analyze(url)
+                url_analysis_time = time.time() - start_time
+                
                 url_risk_score = url_features.get('risk_score', 0.0)
                 url_risk_level = url_features.get('risk_level', 'unknown')
-                
-                print(f"URL: {url}")
-                print(f"Risk Score: {url_risk_score:.3f}")
-                print(f"Risk Level: {url_risk_level.upper()}")
-                print(f"HTTPS: {'✅' if url_features.get('uses_https') else '❌'}")
-                print(f"Suspicious: {'⚠️ YES' if url_risk_score > 0.5 else '✅ NO'}")
                 
                 # For URL-only mode, set visual results to N/A
                 phish_category = 1 if url_risk_score > 0.7 else 0
                 pred_target = 'N/A (URL-only mode)'
                 matched_domain = 'N/A'
                 siamese_conf = 0.0
-                runtime_breakdown = f"0|0|0|0|{url_features.get('_analysis_time', 0)}"
+                runtime_breakdown = f"0|0|0|0|{url_analysis_time:.4f}"
                 
-                with open(result_txt, "a+", encoding='utf-8') as f:
-                    f.write(folder_name + "\t")
-                    f.write(url + "\t")
-                    f.write(str(phish_category) + "\t")
-                    f.write(str(pred_target) + "\t")
-                    f.write(str(matched_domain) + "\t")
-                    f.write(str(siamese_conf) + "\t")
-                    f.write(str(url_risk_score) + "\t")
-                    f.write(str(url_risk_level) + "\t")
-                    f.write(runtime_breakdown + "\n")
+                risk_emoji = "🚨" if url_risk_score >= 0.7 else "⚠️" if url_risk_score >= 0.5 else "✅"
+                pbar.set_postfix_str(f"{risk_emoji} Risk: {url_risk_score:.2f}")
                 
-            except Exception as e:
-                print(f"❌ Error analyzing {folder_name}: {str(e)}")
+            else:
+                # Visual or Fusion mode
+                pbar.set_postfix_str("🔍 Running detection...")
+                
+                phish_category, pred_target, matched_domain, \
+                        plotvis, siamese_conf, runtime_breakdown, \
+                        pred_boxes, pred_classes, url_risk_score, url_features = \
+                        phishintention_cls.test_orig_phishintention(url, screenshot_path)
+                
+                url_risk_level = url_features.get('risk_level', 'unknown') if url_features else 'N/A'
+                
+                result_emoji = "🚨 PHISHING" if phish_category == 1 else "✅ BENIGN"
+                pbar.set_postfix_str(result_emoji)
+                
+                # Save visualization if phishing detected
+                if phish_category and plotvis is not None:
+                    os.makedirs(folder_path, exist_ok=True)
+                    cv2.imwrite(os.path.join(folder_path, "predict.png"), plotvis)
             
-        else:
-            # Visual or Fusion mode
-            phish_category, pred_target, matched_domain, \
-                    plotvis, siamese_conf, runtime_breakdown, \
-                    pred_boxes, pred_classes, url_risk_score, url_features = \
-                    phishintention_cls.test_orig_phishintention(url, screenshot_path)
-
-            try:
-                with open(result_txt, "a+", encoding='ISO-8859-1') as f:
-                    f.write(folder_name + "\t")
-                    f.write(url + "\t")
-                    f.write(str(phish_category) + "\t")
-                    f.write(str(pred_target) + "\t")  # write top1 prediction only
-                    f.write(str(matched_domain) + "\t")
-                    f.write(str(siamese_conf) + "\t")
-                    f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
-                    f.write(str(url_features.get('risk_level', 'unknown') if url_features else 'N/A') + "\t")  # NEW: Risk level
-                    f.write(runtime_breakdown + "\n")
-            except UnicodeError:
-                with open(result_txt, "a+", encoding='utf-8') as f:
-                    f.write(folder_name + "\t")
-                    f.write(url + "\t")
-                    f.write(str(phish_category) + "\t")
-                    f.write(str(pred_target) + "\t")  # write top1 prediction only
-                    f.write(str(matched_domain) + "\t")
-                    f.write(str(siamese_conf) + "\t")
-                    f.write(str(url_risk_score) + "\t")  # NEW: URL risk score
-                    f.write(str(url_features.get('risk_level', 'unknown') if url_features else 'N/A') + "\t")  # NEW: Risk level
-                    f.write(runtime_breakdown + "\n")
-
-            if phish_category and plotvis is not None:
-                os.makedirs(folder_path, exist_ok=True)
-                cv2.imwrite(os.path.join(folder_path, "predict.png"), plotvis)
+            # Write results with consistent UTF-8 encoding (unified for all modes)
+            with open(result_txt, "a+", encoding='utf-8') as f:
+                f.write(folder_name + "\t")
+                f.write(url + "\t")
+                f.write(str(phish_category) + "\t")
+                f.write(str(pred_target) + "\t")
+                f.write(str(matched_domain) + "\t")
+                f.write(str(siamese_conf) + "\t")
+                f.write(str(url_risk_score) + "\t")
+                f.write(str(url_risk_level) + "\t")
+                f.write(runtime_breakdown + "\n")
+            
+            # Add to processed set
+            processed_urls.add(url)
+            processed += 1
+                
+        except Exception as e:
+            pbar.set_postfix_str(f"❌ Error")
+            errors += 1
+            print(f"\n❌ Error analyzing {folder_name}: {str(e)}")
         
         # Break after first iteration if single site
         if is_single_site:
             break
     
+    # Final summary
     print(f"\n{'='*70}")
     print(f"Analysis complete!")
-    print(f"Results saved to: {result_txt}")
+    print(f"{'='*70}")
+    print(f"✅ Processed: {processed}")
+    print(f"⏭️  Skipped: {skipped}")
+    if errors > 0:
+        print(f"❌ Errors: {errors}")
+    print(f"📁 Results saved to: {result_txt}")
     print(f"{'='*70}")
